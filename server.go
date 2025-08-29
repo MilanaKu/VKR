@@ -2,11 +2,22 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	_ "modernc.org/sqlite"
+)
+
+var httpRequestTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total numbers of HTTP Requests",
+	},
+	[]string{"path"},
 )
 
 type Goods struct {
@@ -21,11 +32,16 @@ type Examples struct {
 	Price     int
 	ImagePath string
 }
+type Feedbacks struct {
+	Name     string
+	Email    string
+	Comments string
+}
 
-func dbConnect() *sql.DB {
+func dbConnect1() *sql.DB {
 	db, err := sql.Open("sqlite", "marmelad.db")
 	if err != nil {
-		fmt.Println("Ошибка подключения к БД:", err)
+		fmt.Println("Ошибка подключения к БД1:", err)
 		return nil
 	}
 	return db
@@ -74,7 +90,9 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	db := dbConnect()
+	httpRequestTotal.WithLabelValues(r.URL.Path).Inc()
+
+	db := dbConnect1()
 	defer db.Close()
 
 	if r.Method == "GET" {
@@ -93,7 +111,10 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func CatalogHandler(w http.ResponseWriter, r *http.Request) {
-	db := dbConnect()
+
+	httpRequestTotal.WithLabelValues(r.URL.Path).Inc()
+
+	db := dbConnect1()
 	defer db.Close()
 	if r.Method == "GET" {
 		sweets := selectAllGoods(db)
@@ -111,6 +132,9 @@ func CatalogHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func AboutHandler(w http.ResponseWriter, r *http.Request) {
+
+	httpRequestTotal.WithLabelValues(r.URL.Path).Inc()
+
 	tmpl, err := template.ParseFiles("templates/3page.html")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -119,6 +143,9 @@ func AboutHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl.Execute(w, nil)
 }
 func ContactsHandler(w http.ResponseWriter, r *http.Request) {
+
+	httpRequestTotal.WithLabelValues(r.URL.Path).Inc()
+
 	tmpl, err := template.ParseFiles("templates/4page.html")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -127,6 +154,9 @@ func ContactsHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl.Execute(w, nil)
 }
 func QuestionsHandler(w http.ResponseWriter, r *http.Request) {
+
+	httpRequestTotal.WithLabelValues(r.URL.Path).Inc()
+
 	tmpl, err := template.ParseFiles("templates/5page.html")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -134,14 +164,56 @@ func QuestionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpl.Execute(w, nil)
 }
+func FeedbackHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestTotal.WithLabelValues(r.URL.Path).Inc()
+
+	if r.Method == "POST" {
+		db := dbConnect1()
+		defer db.Close()
+		var person Feedbacks
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&person)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		if person.Name == "" || person.Email == "" || person.Comments == "" {
+			fmt.Println(err)
+			return
+		}
+
+		_, err = db.Exec("INSERT INTO feedbacks (name, email, comments) VALUES (?, ?, ?)", person.Name, person.Email, person.Comments)
+		if err != nil {
+			fmt.Println("Ошибка вставки в БД:", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "success",
+			"message": "Feedback saved successfully",
+		})
+
+	} else {
+		tmpl, err := template.ParseFiles("templates/6page.html")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmpl.Execute(w, nil)
+	}
+}
 
 func main() {
 
+	prometheus.MustRegister(httpRequestTotal)
+	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/", IndexHandler)
 	http.HandleFunc("/catalog", CatalogHandler)
 	http.HandleFunc("/question_answer", QuestionsHandler)
 	http.HandleFunc("/about-us", AboutHandler)
 	http.HandleFunc("/contacts", ContactsHandler)
+	http.HandleFunc("/feedback", FeedbackHandler)
 	fmt.Println("Server is running...")
 	http.ListenAndServe(":8080", nil)
 
